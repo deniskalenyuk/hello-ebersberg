@@ -2,5 +2,11 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "hello-ebersberg",
   "main": "src/index.ts",
-  "compatibility_date": "2026-10-01"
+  "compatibility_date": "2026-10-01",
+  "kv_namespaces": [
+    {
+      "binding": "PHOTOS",
+      "id": "003dc02dd46843e1a90e480bc1d03809"
+    }
+  ]
 }
