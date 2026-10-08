@@ -2,9 +2,11 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import page from './page.html'
 
-type Bindings = { PHOTOS: KVNamespace }
+// Image bytes live in KV; the index lives in D1 because KV listings lag
+// behind writes and deletes by up to a minute.
+type Bindings = { PHOTOS: KVNamespace; DB: D1Database }
 
-type PhotoMeta = { contentType: string; size: number; uploadedAt: string }
+type PhotoRow = { id: string; content_type: string; size: number; uploaded_at: string }
 
 const PREFIX = 'photo:'
 const MAX_BYTES = 5 * 1024 * 1024
@@ -12,19 +14,23 @@ const MAX_PHOTOS = 50
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 const ID_PATTERN = /^\d{13}-[0-9a-f-]{36}$/
 
+const toPhoto = (row: PhotoRow) => ({
+  id: row.id,
+  url: `/photos/${row.id}`,
+  contentType: row.content_type,
+  size: row.size,
+  uploadedAt: row.uploaded_at,
+})
+
 const app = new Hono<{ Bindings: Bindings }>()
 
 app.get('/', (c) => c.html(page))
 
 app.get('/api/photos', async (c) => {
-  const list = await c.env.PHOTOS.list<PhotoMeta>({ prefix: PREFIX })
-  const photos = list.keys
-    .map((key) => {
-      const id = key.name.slice(PREFIX.length)
-      return { id, url: `/photos/${id}`, ...key.metadata }
-    })
-    .reverse()
-  return c.json({ photos })
+  const { results } = await c.env.DB.prepare(
+    'SELECT id, content_type, size, uploaded_at FROM photos ORDER BY id DESC'
+  ).all<PhotoRow>()
+  return c.json({ photos: results.map(toPhoto) })
 })
 
 app.post(
@@ -44,20 +50,23 @@ app.post(
       return c.json({ error: 'Empty upload.' }, 400)
     }
 
-    const existing = await c.env.PHOTOS.list({ prefix: PREFIX, limit: MAX_PHOTOS })
-    if (existing.keys.length >= MAX_PHOTOS) {
+    const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM photos').first<number>('n')
+    if ((count ?? 0) >= MAX_PHOTOS) {
       return c.json({ error: `Photo limit reached (${MAX_PHOTOS}). Delete one first.` }, 409)
     }
 
-    const id = `${Date.now()}-${crypto.randomUUID()}`
-    const metadata: PhotoMeta = {
-      contentType,
+    const row: PhotoRow = {
+      id: `${Date.now()}-${crypto.randomUUID()}`,
+      content_type: contentType,
       size: body.byteLength,
-      uploadedAt: new Date().toISOString(),
+      uploaded_at: new Date().toISOString(),
     }
-    await c.env.PHOTOS.put(PREFIX + id, body, { metadata })
+    await c.env.PHOTOS.put(PREFIX + row.id, body)
+    await c.env.DB.prepare('INSERT INTO photos (id, content_type, size, uploaded_at) VALUES (?, ?, ?, ?)')
+      .bind(row.id, row.content_type, row.size, row.uploaded_at)
+      .run()
 
-    return c.json({ id, url: `/photos/${id}`, ...metadata }, 201)
+    return c.json(toPhoto(row), 201)
   }
 )
 
@@ -65,11 +74,16 @@ app.get('/photos/:id', async (c) => {
   const id = c.req.param('id')
   if (!ID_PATTERN.test(id)) return c.notFound()
 
-  const { value, metadata } = await c.env.PHOTOS.getWithMetadata<PhotoMeta>(PREFIX + id, 'arrayBuffer')
-  if (!value || !metadata) return c.notFound()
+  const row = await c.env.DB.prepare('SELECT content_type FROM photos WHERE id = ?')
+    .bind(id)
+    .first<Pick<PhotoRow, 'content_type'>>()
+  if (!row) return c.notFound()
+
+  const value = await c.env.PHOTOS.get(PREFIX + id, 'arrayBuffer')
+  if (!value) return c.notFound()
 
   return c.body(value, 200, {
-    'Content-Type': metadata.contentType,
+    'Content-Type': row.content_type,
     'X-Content-Type-Options': 'nosniff',
     'Cache-Control': 'no-store',
   })
@@ -79,6 +93,7 @@ app.delete('/api/photos/:id', async (c) => {
   const id = c.req.param('id')
   if (!ID_PATTERN.test(id)) return c.notFound()
 
+  await c.env.DB.prepare('DELETE FROM photos WHERE id = ?').bind(id).run()
   await c.env.PHOTOS.delete(PREFIX + id)
   return c.body(null, 204)
 })

@@ -8,5 +8,12 @@
       "binding": "PHOTOS",
       "id": "003dc02dd46843e1a90e480bc1d03809"
     }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hello-ebersberg",
+      "database_id": "7bfa0ab0-8932-4de8-bb17-d98af3611520"
+    }
   ]
 }

@@ -1,12 +1,13 @@
 # hello-ebersberg
 
 A minimal [Hono](https://hono.dev) app running on Cloudflare Workers. The page
-can take a photo with the device camera and upload it; photos are stored in
-Workers KV and can be deleted again from the page.
+can take a photo with the device camera and upload it; the image bytes are stored in
+Workers KV, the photo index in D1, and photos can be deleted again from the page.
 
 ```
 npm install
 npm run cf-typegen
+npx wrangler d1 migrations apply hello-ebersberg --local
 npm run dev
 ```
 
